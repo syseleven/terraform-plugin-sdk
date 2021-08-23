@@ -162,6 +162,26 @@ func (d *ResourceData) TfTypeResourceState() (*tftypes.Value, error) {
 	return convert.ToTfValue(stateVal)
 }
 
+// GetOkConfigured returns value from configuration source level.
+func (d *ResourceData) GetOkConfigured(key string) (interface{}, bool) {
+	// Code is similar to GetOk only 'getSourceConfig' is used.
+	r := d.getRaw(key, getSourceConfig|getSourceExact)
+	exists := r.Exists && !r.Computed
+	if exists {
+		// If it exists, we also want to verify it is not the zero-value.
+		value := r.Value
+		zero := r.Schema.Type.Zero()
+
+		if eq, ok := value.(Equal); ok {
+			exists = !eq.Equal(zero)
+		} else {
+			exists = !reflect.DeepEqual(value, zero)
+		}
+	}
+
+	return r.Value, exists
+}
+
 // Get returns the data for the given key, or nil if the key doesn't exist
 // in the schema.
 //
