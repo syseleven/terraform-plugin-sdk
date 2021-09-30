@@ -1608,7 +1608,16 @@ func validateRequiredWithAttribute(
 
 	for _, key := range allKeys {
 		if _, ok := c.Get(key); !ok {
-			return fmt.Errorf("%q: all of `%s` must be specified", k, strings.Join(allKeys, ","))
+			if schema.DefaultFunc != nil {
+				// We have a dynamic default. Check if we have a value.
+				var err error
+				raw, err := schema.DefaultFunc()
+				// We're okay as long as we had a value set
+				ok = raw != nil && err == nil
+			}
+			if !ok {
+				return fmt.Errorf("%q: all of `%s` must be specified", k, strings.Join(allKeys, ","))
+			}
 		}
 	}
 
