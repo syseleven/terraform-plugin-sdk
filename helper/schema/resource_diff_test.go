@@ -1,12 +1,16 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package schema
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"sort"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/internal/configs/hcl2shim"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -38,7 +42,7 @@ type resourceDiffTestCase struct {
 }
 
 // testDiffCases produces a list of test cases for use with SetNew and SetDiff.
-func testDiffCases(t *testing.T, oldPrefix string, oldOffset int, computed bool) []resourceDiffTestCase {
+func testDiffCases(t *testing.T, computed bool) []resourceDiffTestCase {
 	return []resourceDiffTestCase{
 		{
 			Name: "basic primitive diff",
@@ -634,7 +638,7 @@ func testDiffCases(t *testing.T, oldPrefix string, oldOffset int, computed bool)
 }
 
 func TestSetNew(t *testing.T) {
-	testCases := testDiffCases(t, "", 0, false)
+	testCases := testDiffCases(t, false)
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			m := schemaMap(tc.Schema)
@@ -649,19 +653,19 @@ func TestSetNew(t *testing.T) {
 				return
 			}
 			for _, k := range d.UpdatedKeys() {
-				if err := m.diff(k, m[k], tc.Diff, d, false); err != nil {
+				if err := m.diff(context.Background(), k, m[k], tc.Diff, d, false); err != nil {
 					t.Fatalf("bad: %s", err)
 				}
 			}
-			if !reflect.DeepEqual(tc.Expected, tc.Diff) {
-				t.Fatalf("Expected %s, got %s", spew.Sdump(tc.Expected), spew.Sdump(tc.Diff))
+			if diff := cmp.Diff(tc.Expected, tc.Diff); diff != "" {
+				t.Fatalf("unexpected difference: %s", diff)
 			}
 		})
 	}
 }
 
 func TestSetNewComputed(t *testing.T) {
-	testCases := testDiffCases(t, "", 0, true)
+	testCases := testDiffCases(t, true)
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			m := schemaMap(tc.Schema)
@@ -676,12 +680,12 @@ func TestSetNewComputed(t *testing.T) {
 				return
 			}
 			for _, k := range d.UpdatedKeys() {
-				if err := m.diff(k, m[k], tc.Diff, d, false); err != nil {
+				if err := m.diff(context.Background(), k, m[k], tc.Diff, d, false); err != nil {
 					t.Fatalf("bad: %s", err)
 				}
 			}
-			if !reflect.DeepEqual(tc.Expected, tc.Diff) {
-				t.Fatalf("Expected %s, got %s", spew.Sdump(tc.Expected), spew.Sdump(tc.Diff))
+			if diff := cmp.Diff(tc.Expected, tc.Diff); diff != "" {
+				t.Fatalf("unexpected difference: %s", diff)
 			}
 		})
 	}
@@ -945,12 +949,12 @@ func TestForceNew(t *testing.T) {
 				return
 			}
 			for _, k := range d.UpdatedKeys() {
-				if err := m.diff(k, m[k], tc.Diff, d, false); err != nil {
+				if err := m.diff(context.Background(), k, m[k], tc.Diff, d, false); err != nil {
 					t.Fatalf("bad: %s", err)
 				}
 			}
-			if !reflect.DeepEqual(tc.Expected, tc.Diff) {
-				t.Fatalf("Expected %s, got %s", spew.Sdump(tc.Expected), spew.Sdump(tc.Diff))
+			if diff := cmp.Diff(tc.Expected, tc.Diff); diff != "" {
+				t.Fatalf("unexpected difference: %s", diff)
 			}
 		})
 	}
@@ -1026,16 +1030,23 @@ func TestClear(t *testing.T) {
 					Optional: true,
 					Computed: true,
 				},
+				"onewithsuffix": {
+					Type:     TypeString,
+					Optional: true,
+					Computed: true,
+				},
 			},
 			State: &terraform.InstanceState{
 				Attributes: map[string]string{
-					"foo": "bar",
-					"one": "two",
+					"foo":           "bar",
+					"one":           "two",
+					"onewithsuffix": "two",
 				},
 			},
 			Config: testConfig(t, map[string]interface{}{
-				"foo": "baz",
-				"one": "three",
+				"foo":           "baz",
+				"one":           "three",
+				"onewithsuffix": "three",
 			}),
 			Diff: &terraform.InstanceDiff{
 				Attributes: map[string]*terraform.ResourceAttrDiff{
@@ -1047,6 +1058,10 @@ func TestClear(t *testing.T) {
 						Old: "two",
 						New: "three",
 					},
+					"onewithsuffix": {
+						Old: "two",
+						New: "three",
+					},
 				},
 			},
 			Key: "one",
@@ -1055,6 +1070,10 @@ func TestClear(t *testing.T) {
 					"foo": {
 						Old: "bar",
 						New: "baz",
+					},
+					"onewithsuffix": {
+						Old: "two",
+						New: "three",
 					},
 				},
 			},
@@ -1179,12 +1198,12 @@ func TestClear(t *testing.T) {
 				return
 			}
 			for _, k := range d.UpdatedKeys() {
-				if err := m.diff(k, m[k], tc.Diff, d, false); err != nil {
+				if err := m.diff(context.Background(), k, m[k], tc.Diff, d, false); err != nil {
 					t.Fatalf("bad: %s", err)
 				}
 			}
-			if !reflect.DeepEqual(tc.Expected, tc.Diff) {
-				t.Fatalf("Expected %s, got %s", spew.Sdump(tc.Expected), spew.Sdump(tc.Diff))
+			if diff := cmp.Diff(tc.Expected, tc.Diff); diff != "" {
+				t.Fatalf("unexpected difference: %s", diff)
 			}
 		})
 	}
@@ -1223,6 +1242,99 @@ func TestGetChangedKeysPrefix(t *testing.T) {
 			},
 		},
 		{
+			Name: "basic primitive diff with empty prefix",
+			Schema: map[string]*Schema{
+				"foo": {
+					Type:     TypeString,
+					Optional: true,
+					Computed: true,
+				},
+				"qux": {
+					Type:     TypeString,
+					Optional: true,
+					Computed: true,
+				},
+			},
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"foo": "bar",
+					"qux": "abc",
+				},
+			},
+			Config: testConfig(t, map[string]interface{}{
+				"foo": "baz",
+				"qux": "abc",
+			}),
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"foo": {
+						Old: "bar",
+						New: "baz",
+					},
+				},
+			},
+			Key: "",
+			ExpectedKeys: []string{
+				"foo",
+			},
+		},
+		{
+			Name: "nested diff with empty prefix",
+			Schema: map[string]*Schema{
+				"foo": {
+					Type:     TypeString,
+					Optional: true,
+					Computed: true,
+				},
+				"bar": {
+					Type:     TypeList,
+					Required: true,
+					MaxItems: 1,
+					Elem: &Resource{
+						Schema: map[string]*Schema{
+							"baz": {
+								Type:     TypeString,
+								Optional: true,
+							},
+							"qux": {
+								Type:     TypeString,
+								Optional: true,
+							},
+						},
+					},
+				},
+			},
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"foo":       "abc",
+					"bar.#":     "1",
+					"bar.0.baz": "def",
+					"bar.0.qux": "xyz",
+				},
+			},
+			Config: testConfig(t, map[string]interface{}{
+				"foo": "abc",
+				"bar": []interface{}{
+					map[string]interface{}{
+						"baz": "def",
+						"qux": "uvw",
+					},
+				},
+			}),
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"bar.0.qux": {
+						Old: "xyz",
+						New: "uvw",
+					},
+				},
+			},
+			Key: "",
+			ExpectedKeys: []string{
+				"bar.0.qux",
+			},
+		},
+		{
 			Name: "nested field filtering",
 			Schema: map[string]*Schema{
 				"testfield": {
@@ -1246,18 +1358,44 @@ func TestGetChangedKeysPrefix(t *testing.T) {
 						},
 					},
 				},
+				"foowithsuffix": {
+					Type:     TypeList,
+					Required: true,
+					MaxItems: 1,
+					Elem: &Resource{
+						Schema: map[string]*Schema{
+							"bar": {
+								Type:     TypeString,
+								Optional: true,
+							},
+							"baz": {
+								Type:     TypeString,
+								Optional: true,
+							},
+						},
+					},
+				},
 			},
 			State: &terraform.InstanceState{
 				Attributes: map[string]string{
-					"testfield": "blablah",
-					"foo.#":     "1",
-					"foo.0.bar": "abc",
-					"foo.0.baz": "xyz",
+					"testfield":           "blablah",
+					"foo.#":               "1",
+					"foo.0.bar":           "abc",
+					"foo.0.baz":           "xyz",
+					"foowithsuffix.#":     "1",
+					"foowithsuffix.0.bar": "abc",
+					"foowithsuffix.0.baz": "xyz",
 				},
 			},
 			Config: testConfig(t, map[string]interface{}{
 				"testfield": "modified",
 				"foo": []interface{}{
+					map[string]interface{}{
+						"bar": "abcdefg",
+						"baz": "changed",
+					},
+				},
+				"foowithsuffix": []interface{}{
 					map[string]interface{}{
 						"bar": "abcdefg",
 						"baz": "changed",
@@ -1278,6 +1416,14 @@ func TestGetChangedKeysPrefix(t *testing.T) {
 						Old: "xyz",
 						New: "changed",
 					},
+					"foowithsuffix.0.bar": {
+						Old: "abc",
+						New: "abcdefg",
+					},
+					"foowithsuffix.0.baz": {
+						Old: "xyz",
+						New: "changed",
+					},
 				},
 			},
 			Key: "foo",
@@ -1294,15 +1440,15 @@ func TestGetChangedKeysPrefix(t *testing.T) {
 			keys := d.GetChangedKeysPrefix(tc.Key)
 
 			for _, k := range d.UpdatedKeys() {
-				if err := m.diff(k, m[k], tc.Diff, d, false); err != nil {
+				if err := m.diff(context.Background(), k, m[k], tc.Diff, d, false); err != nil {
 					t.Fatalf("bad: %s", err)
 				}
 			}
 
 			sort.Strings(keys)
 
-			if !reflect.DeepEqual(tc.ExpectedKeys, keys) {
-				t.Fatalf("Expected %s, got %s", spew.Sdump(tc.ExpectedKeys), spew.Sdump(keys))
+			if diff := cmp.Diff(tc.ExpectedKeys, keys); diff != "" {
+				t.Fatalf("unexpected difference: %s", diff)
 			}
 		})
 	}
@@ -1711,7 +1857,10 @@ func TestResourceDiffGetOkExistsSetNew(t *testing.T) {
 	}
 
 	d := newResourceDiff(tc.Schema, testConfig(t, map[string]interface{}{}), tc.State, tc.Diff)
-	d.SetNew(tc.Key, tc.Value)
+
+	if err := d.SetNew(tc.Key, tc.Value); err != nil {
+		t.Fatalf("unexpected SetNew error: %s", err)
+	}
 
 	v, ok := d.GetOkExists(tc.Key)
 	if s, ok := v.(*Set); ok {
@@ -1759,7 +1908,10 @@ func TestResourceDiffGetOkExistsSetNewComputed(t *testing.T) {
 	}
 
 	d := newResourceDiff(tc.Schema, testConfig(t, map[string]interface{}{}), tc.State, tc.Diff)
-	d.SetNewComputed(tc.Key)
+
+	if err := d.SetNewComputed(tc.Key); err != nil {
+		t.Fatalf("unexpected SetNewComputed error: %s", err)
+	}
 
 	_, ok := d.GetOkExists(tc.Key)
 
@@ -2000,7 +2152,10 @@ func TestResourceDiffNewValueKnownSetNew(t *testing.T) {
 	}
 
 	d := newResourceDiff(tc.Schema, tc.Config, tc.State, tc.Diff)
-	d.SetNew(tc.Key, tc.Value)
+
+	if err := d.SetNew(tc.Key, tc.Value); err != nil {
+		t.Fatalf("unexpected SetNew error: %s", err)
+	}
 
 	actual := d.NewValueKnown(tc.Key)
 	if tc.Expected != actual {
@@ -2037,10 +2192,117 @@ func TestResourceDiffNewValueKnownSetNewComputed(t *testing.T) {
 	}
 
 	d := newResourceDiff(tc.Schema, tc.Config, tc.State, tc.Diff)
-	d.SetNewComputed(tc.Key)
+
+	if err := d.SetNewComputed(tc.Key); err != nil {
+		t.Fatalf("unexpected SetNewComputed error: %s", err)
+	}
 
 	actual := d.NewValueKnown(tc.Key)
 	if tc.Expected != actual {
 		t.Fatalf("expected ok: %t, got: %t", tc.Expected, actual)
+	}
+}
+
+func TestResourceDiffHasChanges(t *testing.T) {
+	cases := []struct {
+		Schema map[string]*Schema
+		State  *terraform.InstanceState
+		Diff   *terraform.InstanceDiff
+		Keys   []string
+		Change bool
+	}{
+		// empty call d.HasChanges()
+		{
+			Schema: map[string]*Schema{},
+
+			State: nil,
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{},
+			},
+
+			Keys: []string{},
+
+			Change: false,
+		},
+		// neither has change
+		{
+			Schema: map[string]*Schema{
+				"a": {
+					Type: TypeString,
+				},
+				"b": {
+					Type: TypeString,
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"a": "foo",
+					"b": "foo",
+				},
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"a": {
+						Old: "",
+						New: "foo",
+					},
+					"b": {
+						Old: "",
+						New: "foo",
+					},
+				},
+			},
+
+			Keys: []string{"a", "b"},
+
+			Change: false,
+		},
+		// one key has change
+		{
+			Schema: map[string]*Schema{
+				"a": {
+					Type: TypeString,
+				},
+				"b": {
+					Type: TypeString,
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"a": "foo",
+					"b": "foo",
+				},
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"a": {
+						Old: "",
+						New: "bar",
+					},
+					"b": {
+						Old: "",
+						New: "foo",
+					},
+				},
+			},
+
+			Keys: []string{"a", "b"},
+
+			Change: true,
+		},
+	}
+
+	for i, tc := range cases {
+		d := newResourceDiff(tc.Schema, testConfig(t, map[string]interface{}{}), tc.State, tc.Diff)
+
+		actual := d.HasChanges(tc.Keys...)
+		if actual != tc.Change {
+			t.Fatalf("Bad: %d %#v", i, actual)
+		}
 	}
 }

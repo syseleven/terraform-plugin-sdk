@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package terraform
 
 import (
@@ -197,16 +200,16 @@ func TestResourceConfigGet(t *testing.T) {
 
 		// Test copying and equality
 		t.Run(fmt.Sprintf("copy-and-equal-%d", i), func(t *testing.T) {
-			copy := rc.DeepCopy()
-			if !reflect.DeepEqual(copy, rc) {
-				t.Fatalf("bad:\n\n%#v\n\n%#v", copy, rc)
+			copiedConfig := rc.DeepCopy()
+			if !reflect.DeepEqual(copiedConfig, rc) {
+				t.Fatalf("bad:\n\n%#v\n\n%#v", copiedConfig, rc)
 			}
 
-			if !copy.Equal(rc) {
-				t.Fatalf("copy != rc:\n\n%#v\n\n%#v", copy, rc)
+			if !copiedConfig.Equal(rc) {
+				t.Fatalf("copiedConfig != rc:\n\n%#v\n\n%#v", copiedConfig, rc)
 			}
-			if !rc.Equal(copy) {
-				t.Fatalf("rc != copy:\n\n%#v\n\n%#v", copy, rc)
+			if !rc.Equal(copiedConfig) {
+				t.Fatalf("rc != copiedConfig:\n\n%#v\n\n%#v", copiedConfig, rc)
 			}
 		})
 	}
@@ -257,6 +260,38 @@ func TestResourceConfigEqual_computedKeyOrder(t *testing.T) {
 	rc.ComputedKeys = []string{"foo", "bar"}
 	rc2.ComputedKeys = []string{"bar", "foo"}
 
+	if !rc.Equal(rc2) {
+		t.Fatal("should be equal")
+	}
+}
+
+func TestResourceConfigEqual_CtyValue(t *testing.T) {
+	t.Parallel()
+
+	value := cty.ObjectVal(map[string]cty.Value{
+		"test": cty.UnknownVal(cty.String),
+	})
+	schema := &configschema.Block{
+		Attributes: map[string]*configschema.Attribute{
+			"test": {
+				Type:     cty.String,
+				Optional: true,
+			},
+		},
+	}
+
+	rc := NewResourceConfigShimmed(value, schema)
+	rc2 := NewResourceConfigShimmed(value, schema)
+
+	// Regardless of whether NewResourceConfigShimmed() was updated to set the
+	// CtyValue field, ensure that they differ manually as a major version
+	// compatibility check.
+	rc.CtyValue = value
+	rc2.CtyValue = cty.Value{}
+
+	// At least in v2, these should intentionally be equal even though the
+	// CtyValue fields differ.
+	// Reference: https://github.com/hashicorp/terraform-plugin-sdk/issues/1270
 	if !rc.Equal(rc2) {
 		t.Fatal("should be equal")
 	}

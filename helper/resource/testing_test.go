@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package resource
 
 import (
@@ -10,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hashicorp/go-multierror"
 	testinginterface "github.com/mitchellh/go-testing-interface"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -18,73 +20,94 @@ import (
 )
 
 func init() {
-	if err := os.Setenv(TestEnvVar, "1"); err != nil {
+	if err := os.Setenv(EnvTfAcc, "1"); err != nil {
 		panic(err)
+	}
+}
+
+// testExpectTFatal provides a wrapper for logic which should call
+// (*testing.T).Fatal() or (*testing.T).Fatalf().
+//
+// Since we do not want the wrapping test to fail when an expected test error
+// occurs, it is required that the testLogic passed in uses
+// github.com/mitchellh/go-testing-interface.RuntimeT instead of the real
+// *testing.T.
+//
+// If Fatal() or Fatalf() is not called in the logic, the real (*testing.T).Fatal() will
+// be called to fail the test.
+func testExpectTFatal(t *testing.T, testLogic func()) {
+	t.Helper()
+
+	var recoverIface interface{}
+
+	func() {
+		defer func() {
+			recoverIface = recover()
+		}()
+
+		testLogic()
+	}()
+
+	if recoverIface == nil {
+		t.Fatalf("expected t.Fatal(), got none")
+	}
+
+	recoverStr, ok := recoverIface.(string)
+
+	if !ok {
+		t.Fatalf("expected string from recover(), got: %v (%T)", recoverIface, recoverIface)
+	}
+
+	// this string is hardcoded in github.com/mitchellh/go-testing-interface
+	if !strings.HasPrefix(recoverStr, "testing.T failed, see logs for output") {
+		t.Fatalf("expected t.Fatal(), got: %s", recoverStr)
 	}
 }
 
 func TestParallelTest(t *testing.T) {
 	mt := new(mockT)
 
-	ParallelTest(mt, TestCase{IsUnitTest: true})
+	ParallelTest(mt, TestCase{
+		IsUnitTest: true,
+		ProviderFactories: map[string]func() (*schema.Provider, error){
+			"test": func() (*schema.Provider, error) { //nolint:unparam // required signature
+				return nil, nil
+			},
+		},
+		Steps: []TestStep{
+			{
+				Config: "# not empty",
+			},
+		},
+	})
 
 	if !mt.ParallelCalled {
 		t.Fatal("Parallel() not called")
 	}
 }
 
-func TestTest_factoryError(t *testing.T) {
-	resourceFactoryError := fmt.Errorf("resource factory error")
-
-	factory := func() (*schema.Provider, error) {
-		return nil, resourceFactoryError
-	}
-	mt := new(mockT)
-	recovered := false
-
-	func() {
-		defer func() {
-			r := recover()
-			// this string is hardcoded in github.com/mitchellh/go-testing-interface
-			if s, ok := r.(string); !ok || !strings.HasPrefix(s, "testing.T failed, see logs for output") {
-				panic(r)
-			}
-			recovered = true
-		}()
-		Test(mt, TestCase{
-			ProviderFactories: map[string]func() (*schema.Provider, error){
-				"test": factory,
-			},
-			IsUnitTest: true,
-		})
-	}()
-
-	if !recovered {
-		t.Fatalf("test should've failed fatally")
-	}
-}
-
 func TestComposeAggregateTestCheckFunc(t *testing.T) {
+	err1 := errors.New("Error 1")
 	check1 := func(s *terraform.State) error {
-		return errors.New("Error 1")
+		return err1
 	}
 
+	err2 := errors.New("Error 2")
 	check2 := func(s *terraform.State) error {
-		return errors.New("Error 2")
+		return err2
 	}
 
 	f := ComposeAggregateTestCheckFunc(check1, check2)
 	err := f(nil)
 	if err == nil {
-		t.Fatalf("Expected errors")
+		t.Fatal("expected error, got none")
 	}
 
-	multi := err.(*multierror.Error)
-	if !strings.Contains(multi.Errors[0].Error(), "Error 1") {
-		t.Fatalf("Expected Error 1, Got %s", multi.Errors[0])
+	if !errors.Is(err, err1) {
+		t.Errorf("expected %s, got: %s", err1, err)
 	}
-	if !strings.Contains(multi.Errors[1].Error(), "Error 2") {
-		t.Fatalf("Expected Error 2, Got %s", multi.Errors[1])
+	if !errors.Is(err, err2) {
+		t.Errorf("expected %s, got: %s", err2, err)
 	}
 }
 
@@ -843,63 +866,1224 @@ func mockSweeperFunc(s string) error {
 	return nil
 }
 
-func TestCheckResourceAttr_empty(t *testing.T) {
-	s := terraform.NewState()
-	s.AddModuleState(&terraform.ModuleState{
-		Path: []string{"root"},
-		Resources: map[string]*terraform.ResourceState{
-			"test_resource": {
-				Primary: &terraform.InstanceState{
-					Attributes: map[string]string{
-						"empty_list.#": "0",
-						"empty_map.%":  "0",
+func TestTestCheckResourceAttr(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		state         *terraform.State
+		key           string
+		value         string
+		expectedError error
+	}{
+		"attribute not found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
 					},
 				},
 			},
+			key:           "nonexistent",
+			value:         "test-value",
+			expectedError: fmt.Errorf("Attribute 'nonexistent' not found"),
 		},
-	})
+		"bool attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_bool_attribute",
+			value: "true",
+		},
+		"bool attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_bool_attribute",
+			value:         "false",
+			expectedError: fmt.Errorf("Attribute 'test_bool_attribute' expected \"false\", got \"true\""),
+		},
+		"float attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_float_attribute": "1.2",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_float_attribute",
+			value: "1.2",
+		},
+		"float attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_float_attribute": "1.2",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_float_attribute",
+			value:         "3.4",
+			expectedError: fmt.Errorf("Attribute 'test_float_attribute' expected \"3.4\", got \"1.2\""),
+		},
+		"integer attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_integer_attribute": "123",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_integer_attribute",
+			value: "123",
+		},
+		"integer attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_integer_attribute": "123",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_integer_attribute",
+			value:         "456",
+			expectedError: fmt.Errorf("Attribute 'test_integer_attribute' expected \"456\", got \"123\""),
+		},
+		"list attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute",
+			value:         "test-value",
+			expectedError: fmt.Errorf("list or set attribute 'test_list_attribute' must be checked by element count key (test_list_attribute.#) or element value keys (e.g. test_list_attribute.0)"),
+		},
+		"list attribute element count match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.#",
+			value: "1",
+		},
+		"list attribute element count mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute.#",
+			value:         "2",
+			expectedError: fmt.Errorf("Attribute 'test_list_attribute.#' expected \"2\", got \"1\""),
+		},
+		"list attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.#",
+			value: "0",
+		},
+		// Special case with .# and value 0
+		"list attribute element count match 0 when missing": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.#",
+			value: "0",
+		},
+		"list attribute element value match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.0",
+			value: "test-value",
+		},
+		"list attribute element value mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute.0",
+			value:         "not-test-value",
+			expectedError: fmt.Errorf("Attribute 'test_list_attribute.0' expected \"not-test-value\", got \"test-value\""),
+		},
+		"map attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute",
+			value:         "test-value",
+			expectedError: fmt.Errorf("map attribute 'test_map_attribute' must be checked by element count key (test_map_attribute.%%) or element value keys (e.g. test_map_attribute.examplekey)"),
+		},
+		"map attribute element count match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.%",
+			value: "1",
+		},
+		"map attribute element count mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute.%",
+			value:         "2",
+			expectedError: fmt.Errorf("Attribute 'test_map_attribute.%%' expected \"2\", got \"1\""),
+		},
+		"map attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.%",
+			value: "0",
+		},
+		// Special case with .% and value 0
+		"map attribute element count match 0 when missing": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.%",
+			value: "0",
+		},
+		"map attribute element value match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.testkey1",
+			value: "test-value-1",
+		},
+		"map attribute element value mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute.testkey1",
+			value:         "test-value-2",
+			expectedError: fmt.Errorf("Attribute 'test_map_attribute.testkey1' expected \"test-value-2\", got \"test-value-1\""),
+		},
+		"set attribute indexing error": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_set_attribute.#":                         "1",
+										"test_set_attribute.101.test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_set_attribute.101.nonexistent",
+			value:         "test-value",
+			expectedError: fmt.Errorf("likely indexes into TypeSet"),
+		},
+		"string attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_string_attribute",
+			value: "test-value",
+		},
+		"string attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_string_attribute",
+			value:         "not-test-value",
+			expectedError: fmt.Errorf("Attribute 'test_string_attribute' expected \"not-test-value\", got \"test-value\""),
+		},
+	}
 
-	for _, key := range []string{
-		"empty_list.#",
-		"empty_map.%",
-		"missing_list.#",
-		"missing_map.%",
-	} {
-		t.Run(key, func(t *testing.T) {
-			check := TestCheckResourceAttr("test_resource", key, "0")
-			if err := check(s); err != nil {
-				t.Fatal(err)
+	for name, testCase := range testCases {
+		name, testCase := name, testCase
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := TestCheckResourceAttr("test_resource", testCase.key, testCase.value)(testCase.state)
+
+			if err != nil {
+				if testCase.expectedError == nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+
+				if !strings.Contains(err.Error(), testCase.expectedError.Error()) {
+					t.Fatalf("expected error %q, got: %s", testCase.expectedError, err)
+				}
+			}
+
+			if err == nil && testCase.expectedError != nil {
+				t.Fatalf("expected error: %s", testCase.expectedError)
 			}
 		})
 	}
 }
 
-func TestCheckNoResourceAttr_empty(t *testing.T) {
-	s := terraform.NewState()
-	s.AddModuleState(&terraform.ModuleState{
-		Path: []string{"root"},
-		Resources: map[string]*terraform.ResourceState{
-			"test_resource": {
-				Primary: &terraform.InstanceState{
-					Attributes: map[string]string{
-						"empty_list.#": "0",
-						"empty_map.%":  "0",
+func TestTestCheckResourceAttrWith(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		state         *terraform.State
+		key           string
+		value         string
+		expectedError error
+	}{
+		"attribute not found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
 					},
 				},
 			},
+			key:           "nonexistent",
+			value:         "test-value",
+			expectedError: fmt.Errorf("Attribute 'nonexistent' expected to be set"),
 		},
-	})
+		"bool attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_bool_attribute",
+			value: "true",
+		},
+		"bool attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_bool_attribute",
+			value:         "false",
+			expectedError: fmt.Errorf("attribute 'test_bool_attribute' expected 'false', got 'true'"),
+		},
+		"list attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute",
+			value:         "test-value",
+			expectedError: fmt.Errorf("list or set attribute 'test_list_attribute' must be checked by element count key (test_list_attribute.#) or element value keys (e.g. test_list_attribute.0)"),
+		},
+		"list attribute element count match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.#",
+			value: "1",
+		},
+		"list attribute element count mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute.#",
+			value:         "2",
+			expectedError: fmt.Errorf("attribute 'test_list_attribute.#' expected '2', got '1'"),
+		},
+		"list attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.#",
+			value: "0",
+		},
+		"list attribute element value match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_list_attribute.0",
+			value: "test-value",
+		},
+		"list attribute element value mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute.0",
+			value:         "not-test-value",
+			expectedError: fmt.Errorf("attribute 'test_list_attribute.0' expected 'not-test-value', got 'test-value'"),
+		},
+		"map attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute",
+			value:         "test-value",
+			expectedError: fmt.Errorf("map attribute 'test_map_attribute' must be checked by element count key (test_map_attribute.%%) or element value keys (e.g. test_map_attribute.examplekey)"),
+		},
+		"map attribute element count match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.%",
+			value: "1",
+		},
+		"map attribute element count mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute.%",
+			value:         "2",
+			expectedError: fmt.Errorf("attribute 'test_map_attribute.%%' expected '2', got '1'"),
+		},
+		"map attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.%",
+			value: "0",
+		},
+		"map attribute element value match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_map_attribute.testkey1",
+			value: "test-value-1",
+		},
+		"map attribute element value mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute.testkey1",
+			value:         "test-value-2",
+			expectedError: fmt.Errorf("attribute 'test_map_attribute.testkey1' expected 'test-value-2', got 'test-value-1'"),
+		},
+		"set attribute indexing error": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_set_attribute.#":                         "1",
+										"test_set_attribute.101.test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_set_attribute.101.nonexistent",
+			value:         "test-value",
+			expectedError: fmt.Errorf("likely indexes into TypeSet"),
+		},
+		"string attribute match": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:   "test_string_attribute",
+			value: "test-value",
+		},
+		"string attribute mismatch": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_string_attribute",
+			value:         "not-test-value",
+			expectedError: fmt.Errorf("attribute 'test_string_attribute' expected 'not-test-value', got 'test-value'"),
+		},
+	}
 
-	for _, key := range []string{
-		"empty_list.#",
-		"empty_map.%",
-		"missing_list.#",
-		"missing_map.%",
-	} {
-		t.Run(key, func(t *testing.T) {
-			check := TestCheckNoResourceAttr("test_resource", key)
-			if err := check(s); err != nil {
-				t.Fatal(err)
+	for name, testCase := range testCases {
+		name, testCase := name, testCase
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := TestCheckResourceAttrWith("test_resource", testCase.key, func(v string) error {
+				if testCase.value != v {
+					return fmt.Errorf("attribute '%s' expected '%s', got '%s'", testCase.key, testCase.value, v)
+				}
+				return nil
+			})(testCase.state)
+
+			if err != nil {
+				if testCase.expectedError == nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+
+				if !strings.Contains(err.Error(), testCase.expectedError.Error()) {
+					t.Fatalf("expected error %q, got: %s", testCase.expectedError, err)
+				}
+			}
+
+			if err == nil && testCase.expectedError != nil {
+				t.Fatalf("expected error: %s", testCase.expectedError)
+			}
+		})
+	}
+}
+
+func TestTestCheckNoResourceAttr(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		state         *terraform.State
+		key           string
+		expectedError error
+	}{
+		"attribute not found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			key: "nonexistent",
+		},
+		"attribute found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_bool_attribute",
+			expectedError: fmt.Errorf("Attribute 'test_bool_attribute' found when not expected"),
+		},
+		"list attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute",
+			expectedError: fmt.Errorf("list or set attribute 'test_list_attribute' must be checked by element count key (test_list_attribute.#) or element value keys (e.g. test_list_attribute.0)"),
+		},
+		// Special case with .# and value 0
+		"list attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key: "test_list_attribute.#",
+		},
+		"list attribute element count mismatch 0 when non-empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute.#",
+			expectedError: fmt.Errorf("Attribute 'test_list_attribute.#' found when not expected"),
+		},
+		"map attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute",
+			expectedError: fmt.Errorf("map attribute 'test_map_attribute' must be checked by element count key (test_map_attribute.%%) or element value keys (e.g. test_map_attribute.examplekey)"),
+		},
+		// Special case with .% and value 0
+		"map attribute element count match 0 when empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%": "0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key: "test_map_attribute.%",
+		},
+		"map attribute element count mismatch 0 when non-empty": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute.%",
+			expectedError: fmt.Errorf("Attribute 'test_map_attribute.%%' found when not expected"),
+		},
+		"set attribute indexing error": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_set_attribute.#":                         "1",
+										"test_set_attribute.101.test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_set_attribute.101.test_string_attribute",
+			expectedError: fmt.Errorf("likely indexes into TypeSet"),
+		},
+	}
+
+	for name, testCase := range testCases {
+		name, testCase := name, testCase
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := TestCheckNoResourceAttr("test_resource", testCase.key)(testCase.state)
+
+			if err != nil {
+				if testCase.expectedError == nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+
+				if !strings.Contains(err.Error(), testCase.expectedError.Error()) {
+					t.Fatalf("expected error %q, got: %s", testCase.expectedError, err)
+				}
+			}
+
+			if err == nil && testCase.expectedError != nil {
+				t.Fatalf("expected error: %s", testCase.expectedError)
 			}
 		})
 	}
@@ -1190,6 +2374,146 @@ func TestTestCheckResourceAttrPair(t *testing.T) {
 
 			if err != nil {
 				t.Fatalf("failed; want success\ngot: %s", err.Error())
+			}
+		})
+	}
+}
+
+func TestTestCheckResourceAttrSet(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		state         *terraform.State
+		key           string
+		expectedError error
+	}{
+		"attribute not found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "nonexistent",
+			expectedError: fmt.Errorf("Attribute 'nonexistent' expected to be set"),
+		},
+		"attribute found": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_bool_attribute": "true",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key: "test_bool_attribute",
+		},
+		"list attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_list_attribute.#": "1",
+										"test_list_attribute.0": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_list_attribute",
+			expectedError: fmt.Errorf("list or set attribute 'test_list_attribute' must be checked by element count key (test_list_attribute.#) or element value keys (e.g. test_list_attribute.0)"),
+		},
+		"map attribute directly": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_map_attribute.%":        "1",
+										"test_map_attribute.testkey1": "test-value-1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_map_attribute",
+			expectedError: fmt.Errorf("map attribute 'test_map_attribute' must be checked by element count key (test_map_attribute.%%) or element value keys (e.g. test_map_attribute.examplekey)"),
+		},
+		"set attribute indexing error": {
+			state: &terraform.State{
+				IsBinaryDrivenTest: true, // Always true now
+				Modules: []*terraform.ModuleState{
+					{
+						Path: []string{"root"},
+						Resources: map[string]*terraform.ResourceState{
+							"test_resource": {
+								Primary: &terraform.InstanceState{
+									Attributes: map[string]string{
+										"test_set_attribute.#":                         "1",
+										"test_set_attribute.101.test_string_attribute": "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			key:           "test_set_attribute.101.nonexistent",
+			expectedError: fmt.Errorf("likely indexes into TypeSet"),
+		},
+	}
+
+	for name, testCase := range testCases {
+		name, testCase := name, testCase
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := TestCheckResourceAttrSet("test_resource", testCase.key)(testCase.state)
+
+			if err != nil {
+				if testCase.expectedError == nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+
+				if !strings.Contains(err.Error(), testCase.expectedError.Error()) {
+					t.Fatalf("expected error %q, got: %s", testCase.expectedError, err)
+				}
+			}
+
+			if err == nil && testCase.expectedError != nil {
+				t.Fatalf("expected error: %s", testCase.expectedError)
 			}
 		})
 	}

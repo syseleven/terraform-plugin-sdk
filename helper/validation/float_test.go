@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package validation
 
 import (
@@ -63,12 +66,12 @@ func TestValidateFloatAtLeast(t *testing.T) {
 		{
 			val:         1.5,
 			f:           FloatAtLeast(2.5),
-			expectedErr: regexp.MustCompile("expected [\\w]+ to be at least \\(2\\.5\\d*\\), got 1\\.5\\d*"),
+			expectedErr: regexp.MustCompile(`expected [\w]+ to be at least \(2\.5\d*\), got 1\.5\d*`),
 		},
 		{
 			val:         "2.5",
 			f:           FloatAtLeast(1.5),
-			expectedErr: regexp.MustCompile("expected type of [\\w]+ to be float"),
+			expectedErr: regexp.MustCompile(`expected type of [\w]+ to be float`),
 		},
 	})
 }
@@ -86,12 +89,12 @@ func TestValidateFloatAtMost(t *testing.T) {
 		{
 			val:         2.5,
 			f:           FloatAtMost(1.5),
-			expectedErr: regexp.MustCompile("expected [\\w]+ to be at most \\(1\\.5\\d*\\), got 2\\.5\\d*"),
+			expectedErr: regexp.MustCompile(`expected [\w]+ to be at most \(1\.5\d*\), got 2\.5\d*`),
 		},
 		{
 			val:         "2.5",
 			f:           FloatAtMost(3.5),
-			expectedErr: regexp.MustCompile("expected type of [\\w]+ to be float"),
+			expectedErr: regexp.MustCompile(`expected type of [\w]+ to be float`),
 		},
 	})
 }

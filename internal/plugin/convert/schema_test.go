@@ -1,6 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package convert
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -42,7 +46,7 @@ func TestConvertSchemaBlocks(t *testing.T) {
 					{
 						Name: "optional_computed",
 						Type: tftypes.Map{
-							AttributeType: tftypes.Bool,
+							ElementType: tftypes.Bool,
 						},
 						Optional: true,
 						Computed: true,
@@ -186,7 +190,7 @@ func TestConvertSchemaBlocks(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			converted := ProtoToConfigSchema(tc.Block)
+			converted := ProtoToConfigSchema(context.Background(), tc.Block)
 			if !cmp.Equal(converted, tc.Want, typeComparer, valueComparer, equateEmpty) {
 				t.Fatal(cmp.Diff(converted, tc.Want, typeComparer, valueComparer, equateEmpty))
 			}
@@ -218,7 +222,7 @@ func TestConvertProtoSchemaBlocks(t *testing.T) {
 					{
 						Name: "optional_computed",
 						Type: tftypes.Map{
-							AttributeType: tftypes.Bool,
+							ElementType: tftypes.Bool,
 						},
 						Optional: true,
 						Computed: true,
@@ -362,7 +366,7 @@ func TestConvertProtoSchemaBlocks(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			converted := ConfigSchemaToProto(tc.Block)
+			converted := ConfigSchemaToProto(context.Background(), tc.Block)
 			if !cmp.Equal(converted, tc.Want, typeComparer, equateEmpty) {
 				t.Fatal(cmp.Diff(converted, tc.Want, typeComparer, equateEmpty))
 			}

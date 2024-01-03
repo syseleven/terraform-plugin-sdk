@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package customdiff
 
 import (
@@ -19,10 +22,10 @@ func TestValidateChange(t *testing.T) {
 				Optional: true,
 			},
 		},
-		ValidateChange("foo", func(_ context.Context, old, new, meta interface{}) error {
+		ValidateChange("foo", func(_ context.Context, oldValue, newValue, meta interface{}) error {
 			called = true
-			gotOld = old.(string)
-			gotNew = new.(string)
+			gotOld = oldValue.(string)
+			gotNew = newValue.(string)
 			return errors.New("bad")
 		}),
 	)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package customdiff
 
 import (
@@ -23,9 +26,9 @@ func TestIf(t *testing.T) {
 			If(
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) bool {
 					condCalled = true
-					old, new := d.GetChange("foo")
-					gotOld = old.(string)
-					gotNew = new.(string)
+					oldValue, newValue := d.GetChange("foo")
+					gotOld = oldValue.(string)
+					gotNew = newValue.(string)
 					return true
 				},
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) error {
@@ -81,9 +84,9 @@ func TestIf(t *testing.T) {
 			If(
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) bool {
 					condCalled = true
-					old, new := d.GetChange("foo")
-					gotOld = old.(string)
-					gotNew = new.(string)
+					oldValue, newValue := d.GetChange("foo")
+					gotOld = oldValue.(string)
+					gotNew = newValue.(string)
 					return false
 				},
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) error {
@@ -138,10 +141,10 @@ func TestIfValueChange(t *testing.T) {
 			},
 			IfValueChange(
 				"foo",
-				func(_ context.Context, old, new, meta interface{}) bool {
+				func(_ context.Context, oldValue, newValue, meta interface{}) bool {
 					condCalled = true
-					gotOld = old.(string)
-					gotNew = new.(string)
+					gotOld = oldValue.(string)
+					gotNew = newValue.(string)
 					return true
 				},
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) error {
@@ -196,10 +199,10 @@ func TestIfValueChange(t *testing.T) {
 			},
 			IfValueChange(
 				"foo",
-				func(_ context.Context, old, new, meta interface{}) bool {
+				func(_ context.Context, oldValue, newValue, meta interface{}) bool {
 					condCalled = true
-					gotOld = old.(string)
-					gotNew = new.(string)
+					gotOld = oldValue.(string)
+					gotNew = newValue.(string)
 					return false
 				},
 				func(_ context.Context, d *schema.ResourceDiff, meta interface{}) error {

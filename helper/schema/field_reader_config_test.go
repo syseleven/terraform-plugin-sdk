@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package schema
 
 import (
@@ -536,5 +539,6 @@ func TestConfigFieldReader_computedComplexSet(t *testing.T) {
 }
 
 func testConfig(t *testing.T, raw map[string]interface{}) *terraform.ResourceConfig {
+	t.Helper()
 	return terraform.NewResourceConfigRaw(raw)
 }

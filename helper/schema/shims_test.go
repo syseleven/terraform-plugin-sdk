@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package schema
 
 import (
@@ -290,6 +293,10 @@ func TestShimResourceDiff_Timeout_diff(t *testing.T) {
 			"create": "2h",
 		},
 	})
+
+	configVal := cty.ObjectVal(map[string]cty.Value{
+		"foo": cty.NumberIntVal(42),
+	})
 	var s *terraform.InstanceState
 
 	actual, err := r.Diff(context.Background(), s, conf, nil)
@@ -347,7 +354,7 @@ func TestShimResourceDiff_Timeout_diff(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := DiffFromValues(context.Background(), initialVal, appliedVal, r)
+	d, err := DiffFromValues(context.Background(), initialVal, appliedVal, configVal, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3232,7 +3239,9 @@ func TestShimSchemaMap_Diff(t *testing.T) {
 
 			CustomizeDiff: func(_ context.Context, d *ResourceDiff, meta interface{}) error {
 				if d.HasChange("etag") {
-					d.SetNewComputed("version_id")
+					if err := d.SetNewComputed("version_id"); err != nil {
+						return fmt.Errorf("unexpected SetNewComputed error: %w", err)
+					}
 				}
 				return nil
 			},
@@ -3337,7 +3346,7 @@ func TestShimSchemaMap_Diff(t *testing.T) {
 				"stream_enabled":   false,
 				"stream_view_type": "",
 			},
-			CustomizeDiff: func(_ context.Context, diff *ResourceDiff, v interface{}) error {
+			CustomizeDiff: func(_ context.Context, diff *ResourceDiff, _ interface{}) error {
 				v, ok := diff.GetOk("unrelated_set")
 				if ok {
 					return fmt.Errorf("Didn't expect unrelated_set: %#v", v)
@@ -3408,7 +3417,7 @@ func TestShimSchemaMap_Diff(t *testing.T) {
 
 			res := &Resource{Schema: tc.Schema}
 
-			d, err := diffFromValues(context.Background(), stateVal, configVal, res, tc.CustomizeDiff)
+			d, err := diffFromValues(context.Background(), stateVal, configVal, configVal, res, tc.CustomizeDiff)
 			if err != nil {
 				if !tc.Err {
 					t.Fatal(err)

@@ -2,16 +2,29 @@ GOFMT_FILES?=$$(find . -name '*.go')
 
 default: test
 
-test: fmtcheck generate
+test: generate
 	go test ./...
+
+lint:
+	golangci-lint run
 
 generate:
 	go generate ./...
+	cd tools; go generate ./...
 
 fmt:
-	gofmt -w $(GOFMT_FILES)
+	gofmt -s -w -e $(GOFMT_FILES)
 
-fmtcheck:
-	@sh -c "'$(CURDIR)/scripts/gofmtcheck.sh'"
+# Run this if working on the website locally to run in watch mode.
+website:
+	$(MAKE) -C website website
 
-.PHONY: default fmt fmtcheck generate test
+# Use this if you have run `website/build-local` to use the locally built image.
+website/local:
+	$(MAKE) -C website website/local
+
+# Run this to generate a new local Docker image.
+website/build-local:
+	$(MAKE) -C website website/build-local
+
+.PHONY: default fmt lint generate test website website/local website/build-local
