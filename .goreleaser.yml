@@ -1,5 +1,5 @@
 project_name: terraform-plugin-sdk
-build:
+builds:
   skip: true
 milestones:
   - close: true
