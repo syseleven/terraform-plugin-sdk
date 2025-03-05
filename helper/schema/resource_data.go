@@ -54,7 +54,7 @@ type getResult struct {
 // GetOkConfigured returns value from configuration source level.
 func (d *ResourceData) GetOkConfigured(key string) (interface{}, bool) {
 	// Code is similar to GetOk only 'getSourceConfig' is used.
-	r := d.getRaw(key, getSourceConfig|getSourceExact)
+	r := d.getRaw(key, getSourceConfig)
 	exists := r.Exists && !r.Computed
 	if exists {
 		// If it exists, we also want to verify it is not the zero-value.
