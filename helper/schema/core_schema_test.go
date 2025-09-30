@@ -34,15 +34,6 @@ func testResource(block *configschema.Block) *configschema.Block {
 }
 
 func TestSchemaMapCoreConfigSchema(t *testing.T) {
-	// these are global so if new tests are written we should probably employ a mutex
-	DescriptionKind = StringMarkdown
-	SchemaDescriptionBuilder = func(s *Schema) string {
-		if s.Required && s.Description != "" {
-			return fmt.Sprintf("**Required** %s", s.Description)
-		}
-		return s.Description
-	}
-
 	tests := map[string]struct {
 		Schema map[string]*Schema
 		Want   *configschema.Block
@@ -75,10 +66,9 @@ func TestSchemaMapCoreConfigSchema(t *testing.T) {
 			testResource(&configschema.Block{
 				Attributes: map[string]*configschema.Attribute{
 					"int": {
-						Type:            cty.Number,
-						Required:        true,
-						Description:     "**Required** foo bar baz",
-						DescriptionKind: configschema.StringMarkdown,
+						Type:        cty.Number,
+						Required:    true,
+						Description: "foo bar baz",
 					},
 					"float": {
 						Type:     cty.Number,
@@ -453,6 +443,25 @@ func TestSchemaMapCoreConfigSchema(t *testing.T) {
 					"string": {
 						Type:     cty.String,
 						Optional: true, // Just so we can progress to provider-driven validation and return the error there
+					},
+				},
+				BlockTypes: map[string]*configschema.NestedBlock{},
+			}),
+		},
+		"write-only": {
+			map[string]*Schema{
+				"string": {
+					Type:      TypeString,
+					Optional:  true,
+					WriteOnly: true,
+				},
+			},
+			testResource(&configschema.Block{
+				Attributes: map[string]*configschema.Attribute{
+					"string": {
+						Type:      cty.String,
+						Optional:  true,
+						WriteOnly: true,
 					},
 				},
 				BlockTypes: map[string]*configschema.NestedBlock{},
