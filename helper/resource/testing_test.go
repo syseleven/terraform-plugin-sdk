@@ -337,7 +337,7 @@ func TestFilterSweepers(t *testing.T) {
 			Filter: "none",
 		},
 		{
-			Name: "with nested depenencies and top level filter",
+			Name: "with nested dependencies and top level filter",
 			Sweepers: map[string]*Sweeper{
 				"not_matching": {
 					Name: "not_matching",
@@ -362,7 +362,7 @@ func TestFilterSweepers(t *testing.T) {
 			Filter:           "matching_level1",
 		},
 		{
-			Name: "with nested depenencies and middle level filter",
+			Name: "with nested dependencies and middle level filter",
 			Sweepers: map[string]*Sweeper{
 				"not_matching": {
 					Name: "not_matching",
@@ -387,7 +387,7 @@ func TestFilterSweepers(t *testing.T) {
 			Filter:           "matching_level2",
 		},
 		{
-			Name: "with nested depenencies and bottom level filter",
+			Name: "with nested dependencies and bottom level filter",
 			Sweepers: map[string]*Sweeper{
 				"not_matching": {
 					Name: "not_matching",
@@ -809,7 +809,7 @@ func TestRunSweepers(t *testing.T) {
 			ExpectError:     true,
 		},
 		{
-			Name: "failing top and dep allow failues",
+			Name: "failing top and dep allow failures",
 			Sweepers: map[string]*Sweeper{
 				"aws_top": {
 					Name:         "aws_top",
@@ -1401,8 +1401,6 @@ func TestTestCheckResourceAttr(t *testing.T) {
 	}
 
 	for name, testCase := range testCases {
-		name, testCase := name, testCase
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1834,8 +1832,6 @@ func TestTestCheckResourceAttrWith(t *testing.T) {
 	}
 
 	for name, testCase := range testCases {
-		name, testCase := name, testCase
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2065,8 +2061,6 @@ func TestTestCheckNoResourceAttr(t *testing.T) {
 	}
 
 	for name, testCase := range testCases {
-		name, testCase := name, testCase
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2495,8 +2489,6 @@ func TestTestCheckResourceAttrSet(t *testing.T) {
 	}
 
 	for name, testCase := range testCases {
-		name, testCase := name, testCase
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

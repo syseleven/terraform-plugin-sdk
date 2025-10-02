@@ -1633,7 +1633,6 @@ func TestProviderConfigure(t *testing.T) {
 	}
 
 	for name, tc := range cases {
-		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2246,12 +2245,168 @@ func TestProviderImportState(t *testing.T) {
 	}
 
 	for name, testCase := range testCases {
-		name, testCase := name, testCase
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			states, err := testCase.provider.ImportState(context.Background(), testCase.info, testCase.id)
+
+			if err != nil {
+				if testCase.expectedErr == nil {
+					t.Fatalf("unexpected error: %s", err)
+				}
+
+				if !strings.Contains(err.Error(), testCase.expectedErr.Error()) {
+					t.Fatalf("expected error %q, got: %s", testCase.expectedErr, err)
+				}
+			}
+
+			if err == nil && testCase.expectedErr != nil {
+				t.Fatalf("expected error %q, got none", testCase.expectedErr)
+			}
+
+			if diff := cmp.Diff(states, testCase.expectedStates); diff != "" {
+				t.Fatalf("unexpected states difference: %s", diff)
+			}
+		})
+	}
+}
+
+func TestProviderImportStateWithIdentity(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		provider       *Provider
+		info           *terraform.InstanceInfo
+		id             string
+		identity       map[string]string
+		expectedStates []*terraform.InstanceState
+		expectedErr    error
+	}{
+		"error-missing-identity-schema": {
+			provider: &Provider{
+				ResourcesMap: map[string]*Resource{
+					"test_resource": {
+						Importer: &ResourceImporter{},
+						// no identity schema defined
+					},
+				},
+			},
+			identity: map[string]string{
+				"id": "test-id",
+			},
+			info: &terraform.InstanceInfo{
+				Type: "test_resource",
+			},
+			expectedErr: fmt.Errorf("resource test_resource doesn't support identity import"),
+		},
+		"error-missing-ResourceData-Id": {
+			provider: &Provider{
+				ResourcesMap: map[string]*Resource{
+					"test_resource": {
+						Importer: &ResourceImporter{
+							StateContext: func(_ context.Context, d *ResourceData, _ interface{}) ([]*ResourceData, error) {
+								// Example for handling import based on identity but not
+								// setting the id even though it's still required to be set
+								d.SetId("")
+								return []*ResourceData{d}, nil
+							},
+						},
+						Identity: &ResourceIdentity{
+							Version: 1,
+							SchemaFunc: func() map[string]*Schema {
+								return map[string]*Schema{
+									"id": {
+										Type:              TypeString,
+										RequiredForImport: true,
+									},
+								}
+							},
+						},
+					},
+				},
+			},
+			info: &terraform.InstanceInfo{
+				Type: "test_resource",
+			},
+			identity: map[string]string{
+				"id": "test-id",
+			},
+			expectedErr: fmt.Errorf("The provider returned a resource missing an identifier during ImportResourceState."),
+		},
+		"Importer-StateContext-from-identity": {
+			provider: &Provider{
+				ResourcesMap: map[string]*Resource{
+					"test_resource": {
+						Importer: &ResourceImporter{
+							StateContext: func(_ context.Context, d *ResourceData, meta interface{}) ([]*ResourceData, error) {
+								if d.Id() != "" {
+									return nil, fmt.Errorf("expected d.Id() to be empty, got: %s", d.Id())
+								}
+
+								identity, err := d.Identity()
+								if err != nil {
+									return nil, fmt.Errorf("error getting identity: %s", err)
+								}
+								id, exists := identity.GetOk("id")
+								if !exists {
+									return nil, fmt.Errorf("expected identity to contain key id")
+								}
+								if id != "test-id" {
+									return nil, fmt.Errorf("expected identity id %q, got: %s", "test-id", id)
+								}
+
+								// set region as we act as if it's derived from provider defaults
+								err = identity.Set("region", "eu-central-1")
+								if err != nil {
+									return nil, fmt.Errorf("error setting identity region: %s", err)
+								}
+								// set the id as well
+								d.SetId(id.(string))
+
+								return []*ResourceData{d}, nil
+							},
+						},
+						Identity: &ResourceIdentity{
+							Version: 1,
+							SchemaFunc: func() map[string]*Schema {
+								return map[string]*Schema{
+									"id": {
+										Type:              TypeString,
+										RequiredForImport: true,
+									},
+									"region": {
+										Type:              TypeString,
+										OptionalForImport: true,
+									},
+								}
+							},
+						},
+					},
+				},
+			},
+			info: &terraform.InstanceInfo{
+				Type: "test_resource",
+			},
+			identity: map[string]string{
+				"id": "test-id",
+			},
+			expectedStates: []*terraform.InstanceState{
+				{
+					Attributes: map[string]string{"id": "test-id"},
+					Ephemeral:  terraform.EphemeralState{Type: "test_resource"},
+					ID:         "test-id",
+					Identity:   map[string]string{"id": "test-id", "region": "eu-central-1"},
+					Meta:       map[string]interface{}{"schema_version": "0"},
+				},
+			},
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			states, err := testCase.provider.ImportStateWithIdentity(context.Background(), testCase.info, testCase.id, testCase.identity)
 
 			if err != nil {
 				if testCase.expectedErr == nil {
@@ -2288,11 +2443,11 @@ func TestProviderMeta(t *testing.T) {
 }
 
 func TestProvider_InternalValidate(t *testing.T) {
-	cases := []struct {
+	cases := map[string]struct {
 		P           *Provider
 		ExpectedErr error
 	}{
-		{
+		"Provider with schema returns no errors": {
 			P: &Provider{
 				Schema: map[string]*Schema{
 					"foo": {
@@ -2303,7 +2458,7 @@ func TestProvider_InternalValidate(t *testing.T) {
 			},
 			ExpectedErr: nil,
 		},
-		{ // Reserved resource fields should be allowed in provider block
+		"Reserved resource fields in provider block returns no errors": {
 			P: &Provider{
 				Schema: map[string]*Schema{
 					"provisioner": {
@@ -2318,7 +2473,7 @@ func TestProvider_InternalValidate(t *testing.T) {
 			},
 			ExpectedErr: nil,
 		},
-		{ // Reserved provider fields should not be allowed
+		"Reserved provider fields returns an error": { //
 			P: &Provider{
 				Schema: map[string]*Schema{
 					"alias": {
@@ -2329,7 +2484,7 @@ func TestProvider_InternalValidate(t *testing.T) {
 			},
 			ExpectedErr: fmt.Errorf("%s is a reserved field name for a provider", "alias"),
 		},
-		{ // ConfigureFunc and ConfigureContext cannot both be set
+		"Provider with ConfigureFunc and ConfigureContext both set returns an error": {
 			P: &Provider{
 				Schema: map[string]*Schema{
 					"foo": {
@@ -2346,27 +2501,162 @@ func TestProvider_InternalValidate(t *testing.T) {
 			},
 			ExpectedErr: fmt.Errorf("ConfigureFunc and ConfigureContextFunc must not both be set"),
 		},
+		"Provider schema with WriteOnly attribute set returns an error": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:      TypeString,
+						Optional:  true,
+						WriteOnly: true,
+					},
+				},
+			},
+			ExpectedErr: fmt.Errorf("provider schema cannot contain write-only attributes"),
+		},
+		"Provider meta schema with WriteOnly attribute set returns an error": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:     TypeString,
+						Optional: true,
+					},
+				},
+				ProviderMetaSchema: map[string]*Schema{
+					"meta-foo": {
+						Type:      TypeString,
+						Optional:  true,
+						WriteOnly: true,
+					},
+				},
+			},
+			ExpectedErr: fmt.Errorf("provider meta schema cannot contain write-only attributes"),
+		},
+		"Data source schema with WriteOnly attribute set returns an error": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:     TypeString,
+						Optional: true,
+					},
+				},
+				DataSourcesMap: map[string]*Resource{
+					"data-foo": {
+						Schema: map[string]*Schema{
+							"foo": {
+								Type:      TypeString,
+								Optional:  true,
+								WriteOnly: true,
+							},
+						},
+					},
+				},
+			},
+			ExpectedErr: fmt.Errorf("data source data-foo cannot contain write-only attributes"),
+		},
+		"Resource schema with WriteOnly attribute set returns no errors": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:     TypeString,
+						Optional: true,
+					},
+				},
+				ResourcesMap: map[string]*Resource{
+					"resource-foo": {
+						Schema: map[string]*Schema{
+							"foo": {
+								Type:      TypeString,
+								Optional:  true,
+								WriteOnly: true,
+							},
+						},
+					},
+				},
+			},
+			ExpectedErr: nil,
+		},
+		"Data source with ValidateRawResourceConfigFuncs returns an error": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:     TypeString,
+						Optional: true,
+					},
+				},
+				DataSourcesMap: map[string]*Resource{
+					"data-foo": {
+						ValidateRawResourceConfigFuncs: []ValidateRawResourceConfigFunc{
+							func(ctx context.Context, req ValidateResourceConfigFuncRequest, resp *ValidateResourceConfigFuncResponse) {
+
+							},
+							func(ctx context.Context, req ValidateResourceConfigFuncRequest, resp *ValidateResourceConfigFuncResponse) {
+
+							},
+						},
+						Schema: map[string]*Schema{
+							"foo": {
+								Type:     TypeString,
+								Optional: true,
+							},
+						},
+					},
+				},
+			},
+			ExpectedErr: fmt.Errorf("data source data-foo cannot contain ValidateRawResourceConfigFuncs"),
+		},
+		"Resource with ValidateRawResourceConfigFuncs returns no errors": {
+			P: &Provider{
+				Schema: map[string]*Schema{
+					"foo": {
+						Type:     TypeString,
+						Optional: true,
+					},
+				},
+				ResourcesMap: map[string]*Resource{
+					"resource-foo": {
+						ValidateRawResourceConfigFuncs: []ValidateRawResourceConfigFunc{
+							func(ctx context.Context, req ValidateResourceConfigFuncRequest, resp *ValidateResourceConfigFuncResponse) {
+
+							},
+							func(ctx context.Context, req ValidateResourceConfigFuncRequest, resp *ValidateResourceConfigFuncResponse) {
+
+							},
+						},
+						Schema: map[string]*Schema{
+							"foo": {
+								Type:      TypeString,
+								Optional:  true,
+								WriteOnly: true,
+							},
+						},
+					},
+				},
+			},
+			ExpectedErr: nil,
+		},
 	}
 
-	for i, tc := range cases {
-		err := tc.P.InternalValidate()
-		if tc.ExpectedErr == nil {
-			if err != nil {
-				t.Fatalf("%d: Error returned (expected no error): %s", i, err)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := tc.P.InternalValidate()
+			if tc.ExpectedErr == nil {
+				if err != nil {
+					t.Fatalf("Error returned (expected no error): %s", err)
+				}
 			}
-			continue
-		}
-		if tc.ExpectedErr != nil && err == nil {
-			t.Fatalf("%d: Expected error (%s), but no error returned", i, tc.ExpectedErr)
-		}
-		if err.Error() != tc.ExpectedErr.Error() {
-			t.Fatalf("%d: Errors don't match. Expected: %#v Given: %#v", i, tc.ExpectedErr, err)
-		}
+			if tc.ExpectedErr != nil && err == nil {
+				t.Fatalf("Expected error (%s), but no error returned", tc.ExpectedErr)
+			}
+			if tc.ExpectedErr != nil && err.Error() != tc.ExpectedErr.Error() {
+				t.Fatalf("Errors don't match. Expected: %#v Given: %#v", tc.ExpectedErr.Error(), err.Error())
+			}
+		})
 	}
 }
 
 func TestProviderUserAgentAppendViaEnvVar(t *testing.T) {
 	if oldenv, isSet := os.LookupEnv(uaEnvVar); isSet {
+		//nolint:usetesting
 		defer os.Setenv(uaEnvVar, oldenv)
 	} else {
 		defer os.Unsetenv(uaEnvVar)
